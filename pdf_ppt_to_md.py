@@ -465,15 +465,15 @@ class PDFProcessingPipeline:
             # ======================================================
             # Mots tronqués type lé / dé / ét
             # ======================================================
-            bad_word_patterns = [
-                r"\blé\b",
-                r"\bdé\b",
-                r"\bét\b",
-                r"\blés\b",
-                r"\bl\s+et\s+d\s+une\b",
-            ]
-            if any(re.search(p, text, flags=re.IGNORECASE) for p in bad_word_patterns):
-                return True
+            # bad_word_patterns = [
+            #     r"\blé\b",
+            #     r"\bdé\b",
+            #     r"\bét\b",
+            #     r"\blés\b",
+            #     #r"\bl\s+et\s+d\s+une\b",
+            # ]
+            # if any(re.search(p, text, flags=re.IGNORECASE) for p in bad_word_patterns):
+            #     return True
 
             # ======================================================
             # Bruit latin Docling (Ølaboratisn, systŁme…)
@@ -487,6 +487,19 @@ class PDFProcessingPipeline:
         except Exception:
             log.exception("Error while checking broken accents")
             return False
+
+    def fix_misplaced_accents(self,text: str) -> str:
+        rules = [
+            (r"\blé\s+([a-zàâçéèêëîïôûùüÿñæœ])", r"le \1"),
+            (r"\bdé\s+([a-zàâçéèêëîïôûùüÿñæœ])", r"de \1"),
+            (r"\bét\s+([a-zàâçéèêëîïôûùüÿñæœ])", r"ét\1"),
+            (r"\blés\s+([a-zàâçéèêëîïôûùüÿñæœ])", r"les \1"),
+        ]
+
+        for pattern, repl in rules:
+            text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
+
+        return text
 
     def remove_all_accents(self,text: str) -> str:
         """
@@ -556,16 +569,37 @@ class PDFProcessingPipeline:
     # -----------------------------------------------------------------------------------------------------------------
     #                                          DETECT IF PDF IS SCANNED OR NO
     # -----------------------------------------------------------------------------------------------------------------
-    def is_scanned_pdf(self, pdf_path):
+    def is_scanned_pdf(self, pdf_path, first_pages: int = 10, later_pages: int = 3) -> bool:
         """
-        Détecte si le PDF est scanné (image-only)
-        Retourne True si scanné, False sinon.
+        PDF scanné UNIQUEMENT si :
+        - majorité des premières pages sont scannées
+        - ET aucune page vectorielle n'est trouvée plus loin
         """
-        doc = fitz.open(pdf_path)
-        first_page = doc.load_page(0)
-        text = first_page.get_text().strip()
-        doc.close()
-        return len(text) == 0
+        try:
+            doc = fitz.open(pdf_path)
+            total = doc.page_count
+            # Tester les premières pages
+            pages = min(total, first_pages)
+            scanned_first = 0
+            for i in range(pages):
+                text = doc.load_page(i).get_text().strip()
+                if not text:
+                    scanned_first += 1
+            first_ratio_scanned = scanned_first > pages / 2
+            # Vérifier plus loin dans le document
+            found_vectorial_later = False
+            for i in range(first_pages, min(total, first_pages + later_pages)):
+                text = doc.load_page(i).get_text().strip()
+                if len(text) > 50:
+                    found_vectorial_later = True
+                    break
+            doc.close()
+            if first_ratio_scanned and not found_vectorial_later:
+                return True
+            return False
+        except Exception:
+            log.exception("Error while detecting scanned PDF")
+            return False
 
     # -----------------------------------------------------------------------------------------------------------------
     #                                          OCR PDF WITH TESSERACT (FR/AR)
@@ -792,8 +826,6 @@ class PDFProcessingPipeline:
             Analyse uniquement le texte lisible dans l’image.
             IMPORTANT — LANGUE :
             - Tu dois rédiger la réponse STRICTEMENT dans la même langue que le texte visible dans l’image.
-            - Si le texte de l’image est en anglais, réponds en anglais.
-            - Si le texte de l’image est en français, réponds en français.
             - N’effectue aucune traduction.
             Rédige un paragraphe fluide et cohérent qui reformule fidèlement le contenu textuel de l’image.  
             Ne décris jamais la forme du graphique, ni les couleurs, ni les icônes, ni la disposition.  
@@ -967,18 +999,14 @@ class PDFProcessingPipeline:
 
             batch_md = self.clean_docling_artifacts(batch_md)
             batch_md = self.normalize_titles(batch_md)
+            batch_md = self.fix_misplaced_accents(batch_md)
 
             # ========================================================
             # DÉTECTION FINALE APRÈS 1er BATCH DOCLING (CLÉ)
             # ========================================================
-            if (
-                    not from_ppt
-                    and start == 1
-                    and self.has_broken_accents(batch_md)
-            ):
+            if start == 1 and self.has_broken_accents(batch_md):
                 log.warning("******** Broken accents detected AFTER DOCLING → OCR FALLBACK ********")
 
-                # nettoyage des batchs temporaires
                 temp_batch_md.unlink(missing_ok=True)
 
                 text = self.extract_text_tesseract(file_path)
