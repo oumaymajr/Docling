@@ -67,7 +67,7 @@ HEADER_KEYWORDS = [
     "www"
 ]
 MAX_PAGES_WITH_IMAGES = 60
-BATCH_SIZE = 20
+BATCH_SIZE = 10
 class PDFProcessingPipeline:
 
     def __init__(self):
@@ -501,16 +501,16 @@ class PDFProcessingPipeline:
 
         return text
 
-    def remove_all_accents(self,text: str) -> str:
-        """
-        Supprime TOUS les accents de manière sûre.
-        Utilisé uniquement pour PPT → PDF → Docling
-        afin de corriger les encodages erronés.
-        """
-        return ''.join(
-            c for c in unicodedata.normalize('NFD', text)
-            if not unicodedata.combining(c)
-        )
+    def fix_docling_latin_noise(self, text: str) -> str:
+        replacements = {
+            "Ø": "é",
+            "Ł": "è",
+            "Ð": "d",
+            "Þ": "t",
+        }
+        for bad, good in replacements.items():
+            text = text.replace(bad, good)
+        return text
 
     # -----------------------------------------------------------------------------------------------------------------
     #                                              POST PROECESSING OCR
@@ -667,7 +667,8 @@ class PDFProcessingPipeline:
             text_parts.append(text)
             del images
 
-        return "\n\n".join(text_parts)
+        #return "\n\n".join(text_parts)
+        return text_parts
 
     # -----------------------------------------------------------------------------------------------------------------
     #                                         DOCLING (PDF → MARKDOWN)
@@ -697,13 +698,24 @@ class PDFProcessingPipeline:
         if self.is_scanned_pdf(pdf_path):
             log.info("******** PDF detected as scanned → OCR page by page ********")
 
-            text = self.extract_text_tesseract(pdf_path)
-            cleaned = self.clean_ocr_text(text)
+            ocr_pages = self.extract_text_tesseract(pdf_path)
 
-            fr_text, ar_text = self.split_text_ar_fr(cleaned)
-            md = self.build_bilingual_markdown(fr_text, ar_text)
+            md_pages = []
 
-            Path(output_md).write_text(md, encoding="utf-8")
+            for page_idx, page_text in enumerate(ocr_pages):
+                cleaned = self.clean_ocr_text(page_text)
+
+                if not cleaned.strip():
+                    continue
+                fr_text, ar_text = self.split_text_ar_fr(cleaned)
+                md = self.build_bilingual_markdown(fr_text, ar_text)
+
+                # marqueur de page (très utile)
+                md_pages.append(f"\n\n<!-- PAGE {page_idx + 1} -->\n\n{md}")
+
+            final_md = "\n".join(md_pages)
+
+            Path(output_md).write_text(final_md, encoding="utf-8")
             return output_md
 
         # ------------------------------------------------------------------
@@ -903,7 +915,34 @@ class PDFProcessingPipeline:
         Path(out_path).write_text(content, encoding="utf-8")
         log.info(f"******** Markdown final créé ********")
         return out_path
+    # -----------------------------------------------------------------------------------------------------------------
+    #                                                  REMOVE DUPLICATION BATCH
+    # -----------------------------------------------------------------------------------------------------------------
+    def deduplicate_md_batches(self, md_parts: list[str]) -> list[str]:
+        """
+        Supprime les batches Docling dupliqués (identiques ou quasi-identiques).
+        Basé sur hash SHA256 du contenu nettoyé.
+        """
+        seen_hashes = set()
+        unique_parts = []
 
+        for i, part in enumerate(md_parts):
+            normalized = part.strip()
+            h = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+            if h in seen_hashes:
+                log.warning("******** DUPLICATE DOCLING BATCH DETECTED → skipped (batch #%d) ********", i)
+                continue
+
+            seen_hashes.add(h)
+            unique_parts.append(part)
+
+        log.info(
+            "******** Docling batches: %d → %d after deduplication ********",
+            len(md_parts),
+            len(unique_parts)
+        )
+        return unique_parts
 # =====================================================================================================================================
 #                                                    PIPELINE RUN
 # =====================================================================================================================================
@@ -964,12 +1003,24 @@ class PDFProcessingPipeline:
         if force_ocr:
             log.info("******** OCR MODE ENABLED ********")
 
-            text = self.extract_text_tesseract(file_path)
-            cleaned_text = self.clean_ocr_text(text)
-            fr_text, ar_text = self.split_text_ar_fr(cleaned_text)
-            md = self.build_bilingual_markdown(fr_text, ar_text)
+            ocr_pages = self.extract_text_tesseract(file_path)
 
-            output_md.write_text(md, encoding="utf-8")
+            md_pages = []
+
+            for page_idx, page_text in enumerate(ocr_pages):
+                cleaned = self.clean_ocr_text(page_text)
+
+                if not cleaned.strip():
+                    continue
+
+                fr_text, ar_text = self.split_text_ar_fr(cleaned)
+                md = self.build_bilingual_markdown(fr_text, ar_text)
+
+                md_pages.append(f"\n\n<!-- PAGE {page_idx + 1} -->\n\n{md}")
+
+            final_md = "\n".join(md_pages)
+
+            output_md.write_text(final_md, encoding="utf-8")
             return output_md
 
         # ============================================================
@@ -1000,6 +1051,7 @@ class PDFProcessingPipeline:
             batch_md = self.clean_docling_artifacts(batch_md)
             batch_md = self.normalize_titles(batch_md)
             batch_md = self.fix_misplaced_accents(batch_md)
+            batch_md = self.fix_docling_latin_noise(batch_md)
 
             # ========================================================
             # DÉTECTION FINALE APRÈS 1er BATCH DOCLING (CLÉ)
@@ -1023,7 +1075,11 @@ class PDFProcessingPipeline:
         # ============================================================
         # CONCATÉNATION FINALE
         # ============================================================
+
+        md_parts = self.deduplicate_md_batches(md_parts)
         full_md = "\n\n".join(md_parts)
+
+        #full_md = "\n\n".join(md_parts)
         #SUPPRESSION des placeholders Docling (images picture désactivées) dans le cas ou le document dépasse la taille autorisée
         full_md = re.sub(
             r"<!--.*?generate_picture_images=True.*?-->",
@@ -1064,7 +1120,7 @@ class PDFProcessingPipeline:
         return output_md
 
 # TEST
-# path_file=r"C:\Users\Ines_Ben_Amor\PycharmProjects\Pdf_Converter\Crisis Management & Scenario Testing (Accounting View).pdf"
+# path_file=r"C:\Users\Ines_Ben_Amor\PycharmProjects\Pdf_Converter\8.2.7.4_NC29_Prov.pdf"
 # output=r"C:\Users\Ines_Ben_Amor\PycharmProjects\Pdf_Converter\test6.md"
 # instance=PDFProcessingPipeline()
 # start=time.time()
@@ -1072,9 +1128,9 @@ class PDFProcessingPipeline:
 # end=time.time()
 # duree=end-start
 # print(duree)
-
-
-
-
-
+#
+#
+#
+#
+#
 
