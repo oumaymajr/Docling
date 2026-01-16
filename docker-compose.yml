@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  docling-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: docling-api
+    ports:
+      - "8001:8001"
+    volumes:
+      # Mount code for hot reload
+      - .:/app
+      # Mount .env file
+      - ./.env:/app/.env
+      # Persist cache directories
+      - ./image_cache:/app/image_cache
+      - ./detected_images:/app/detected_images
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Uncomment if you need GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - maghrebia-net
+
+networks:
+  maghrebia-net:
+    driver: bridge
+
