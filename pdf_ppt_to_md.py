@@ -1,22 +1,17 @@
-import re
+
 import io
 import json
 import base64
 import hashlib
-import logging
 import subprocess
-import time
-from pathlib import Path
 import fitz
 import re
 import html
-import unicodedata
 import requests
 from pathlib import Path
 from PIL import Image
-
+import logging
 import os
-
 import unicodedata
 from dotenv import load_dotenv
 import pytesseract
@@ -30,9 +25,8 @@ from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
-load_dotenv()
 import warnings
-
+load_dotenv()
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -67,7 +61,7 @@ HEADER_KEYWORDS = [
     "www"
 ]
 MAX_PAGES_WITH_IMAGES = 60
-BATCH_SIZE = 10
+BATCH_SIZE = 15
 class PDFProcessingPipeline:
 
     def __init__(self):
@@ -111,7 +105,7 @@ class PDFProcessingPipeline:
     #-------------------------------------------------------------------------------------------------------------------
     #                                               PDF BATCHES
     #-------------------------------------------------------------------------------------------------------------------
-    def iter_pdf_batches(self, total_pages, batch_size=20):
+    def iter_pdf_batches(self, total_pages, batch_size=40):
         for start in range(1, total_pages + 1, batch_size):
             end = min(start + batch_size - 1, total_pages)
             yield start, end
@@ -410,74 +404,39 @@ class PDFProcessingPipeline:
 
         return text.strip()
 
-    from pathlib import Path
-    import re
-    import fitz
-    import logging
-
-    log = logging.getLogger(__name__)
 
     def has_broken_accents(self, source, pages_to_test: int = 2) -> bool:
         """
         Détection générique d'encodage / accents cassés.
-
         - source: Path (PDF)  → analyse rapide sur 1–2 pages
         - source: str (texte) → analyse directe
         """
 
         try:
-            # ======================================================
-            # Extraire le texte selon le type
-            # ======================================================
             if isinstance(source, Path):
                 doc = fitz.open(source)
                 text_parts = []
-
                 for i in range(min(pages_to_test, doc.page_count)):
                     page = doc.load_page(i)
                     text = page.get_text()
                     if text.strip():
                         text_parts.append(text)
-
                 doc.close()
-
                 if not text_parts:
                     return False
-
                 text = "\n".join(text_parts)
-
             elif isinstance(source, str):
                 if not source.strip():
                     return False
                 text = source
-
             else:
                 raise TypeError(f"Unsupported source type: {type(source)}")
-
-            # ======================================================
             # Glyphes cassés forts (Ø, Ł, Ð, …)
-            # ======================================================
             strong_bad_chars = set("�ØÐÞŁ")
             strong_count = sum(text.count(c) for c in strong_bad_chars)
             if strong_count >= 2:
                 return True
-
-            # ======================================================
-            # Mots tronqués type lé / dé / ét
-            # ======================================================
-            # bad_word_patterns = [
-            #     r"\blé\b",
-            #     r"\bdé\b",
-            #     r"\bét\b",
-            #     r"\blés\b",
-            #     #r"\bl\s+et\s+d\s+une\b",
-            # ]
-            # if any(re.search(p, text, flags=re.IGNORECASE) for p in bad_word_patterns):
-            #     return True
-
-            # ======================================================
             # Bruit latin Docling (Ølaboratisn, systŁme…)
-            # ======================================================
             latin_noise_words = re.findall(r"\b\w*[ØŁÞÐ]\w*\b", text)
             if len(latin_noise_words) >= 2:
                 return True
@@ -511,6 +470,7 @@ class PDFProcessingPipeline:
         for bad, good in replacements.items():
             text = text.replace(bad, good)
         return text
+
 
     # -----------------------------------------------------------------------------------------------------------------
     #                                              POST PROECESSING OCR
@@ -565,41 +525,6 @@ class PDFProcessingPipeline:
             cleaned.append(l)
         return "\n".join(cleaned)
 
-
-    # -----------------------------------------------------------------------------------------------------------------
-    #                                          DETECT IF PDF IS SCANNED OR NO
-    # -----------------------------------------------------------------------------------------------------------------
-    def is_scanned_pdf(self, pdf_path, first_pages: int = 10, later_pages: int = 3) -> bool:
-        """
-        PDF scanné UNIQUEMENT si :
-        - majorité des premières pages sont scannées
-        - ET aucune page vectorielle n'est trouvée plus loin
-        """
-        try:
-            doc = fitz.open(pdf_path)
-            total = doc.page_count
-            # Tester les premières pages
-            pages = min(total, first_pages)
-            scanned_first = 0
-            for i in range(pages):
-                text = doc.load_page(i).get_text().strip()
-                if not text:
-                    scanned_first += 1
-            first_ratio_scanned = scanned_first > pages / 2
-            # Vérifier plus loin dans le document
-            found_vectorial_later = False
-            for i in range(first_pages, min(total, first_pages + later_pages)):
-                text = doc.load_page(i).get_text().strip()
-                if len(text) > 50:
-                    found_vectorial_later = True
-                    break
-            doc.close()
-            if first_ratio_scanned and not found_vectorial_later:
-                return True
-            return False
-        except Exception:
-            log.exception("Error while detecting scanned PDF")
-            return False
 
     # -----------------------------------------------------------------------------------------------------------------
     #                                          OCR PDF WITH TESSERACT (FR/AR)
@@ -667,7 +592,6 @@ class PDFProcessingPipeline:
             text_parts.append(text)
             del images
 
-        #return "\n\n".join(text_parts)
         return text_parts
 
     # -----------------------------------------------------------------------------------------------------------------
@@ -692,31 +616,6 @@ class PDFProcessingPipeline:
 
         log.info("******** Converting PDF → Markdown ********")
 
-        # ------------------------------------------------------------------
-        # PDF SCANNÉ → OCR PAGE PAR PAGE
-        # ------------------------------------------------------------------
-        if self.is_scanned_pdf(pdf_path):
-            log.info("******** PDF detected as scanned → OCR page by page ********")
-
-            ocr_pages = self.extract_text_tesseract(pdf_path)
-
-            md_pages = []
-
-            for page_idx, page_text in enumerate(ocr_pages):
-                cleaned = self.clean_ocr_text(page_text)
-
-                if not cleaned.strip():
-                    continue
-                fr_text, ar_text = self.split_text_ar_fr(cleaned)
-                md = self.build_bilingual_markdown(fr_text, ar_text)
-
-                # marqueur de page (très utile)
-                md_pages.append(f"\n\n<!-- PAGE {page_idx + 1} -->\n\n{md}")
-
-            final_md = "\n".join(md_pages)
-
-            Path(output_md).write_text(final_md, encoding="utf-8")
-            return output_md
 
         # ------------------------------------------------------------------
         # PDF VECTORIEL → DOCLING (PAR BATCH)
@@ -731,26 +630,20 @@ class PDFProcessingPipeline:
         options.do_ocr = "auto"
         options.images_scale = 2
         options.generate_picture_images = False
-
         options.generate_page_images = with_images
         options.generate_table_images = with_images
-
         format_option = PdfFormatOption(
             pipeline_options=options,
             page_range=page_range
         )
-
         converter = DocumentConverter(
             format_options={InputFormat.PDF: format_option}
         )
-
         result = converter.convert(str(pdf_path))
-
         result.document.save_as_markdown(
             output_md,
             image_mode=ImageRefMode.EMBEDDED
         )
-
         log.info("******** Markdown generated ********")
         return output_md
 
@@ -786,10 +679,28 @@ class PDFProcessingPipeline:
                     log.debug("Rejected: small+flat icon-like image (w=%d h=%d aspect=%.2f)", w, h, aspect)
                     return False
 
+
             texts = [
-                "A real document image containing structured data such as tables, charts, diagrams or labeled steps.",
-                "A non-informative decorative ,background image or photographic image with no extractable data,.",
-                "A minimalist symbolic image such as a logo, icon or seal with no information."]
+                """A real document image containing explicit structured data such as:
+                - tables with rows and columns
+                - charts with axes and values
+                - diagrams or flowcharts with labeled steps
+                -screenshots of portail
+                This image contains concrete information that can be extracted.""",
+
+                """A non-informative image such as:
+                - decorative illustration
+                - background image, nature
+                - photo of people, buildings or landscapes
+                - generic illustration without any data
+                This image must be ignored.""",
+
+                """A minimalist symbolic image such as:
+                - a logo, icon, pictogram, emblem, seal
+                - flat graphic without any real data
+                This image contains NO INFORMATION and must ALWAYS be discarded."""
+            ]
+
 
 
             inputs = self.clip_processor(
@@ -950,17 +861,15 @@ class PDFProcessingPipeline:
     def run(self, file_path, output_md):
         file_path = Path(file_path)
         output_md = Path(output_md)
-
         temp_pdf = None
         temp_pptx = None
-        from_ppt = False
 
         # ============================================================
         # PPT / PPTX → PDF
         # ============================================================
         if file_path.suffix.lower() in [".ppt", ".pptx"]:
             log.info("******** PPT / PPTX detected → converting to PDF ********")
-            from_ppt = True
+
 
             if file_path.suffix.lower() == ".ppt":
                 temp_pptx = self.ppt_to_pptx(file_path)
@@ -974,42 +883,17 @@ class PDFProcessingPipeline:
         # ============================================================
         total_pages = self.get_pdf_page_count(file_path)
         log.info("******** PDF pages count = %d ********", total_pages)
-
         with_images = total_pages <= MAX_PAGES_WITH_IMAGES
-
         # ============================================================
-        # DÉCISION OCR AVANT DOCLING (CRITIQUE)
+        # DÉCISION OCR
         # ============================================================
         force_ocr = False
-
-        # Cas 1 : PDF scanné
-        if self.is_scanned_pdf(file_path):
-            log.warning("******** Scanned PDF detected → OCR ********")
-            force_ocr = True
-
-        # Cas 2 : PPT → PDF (encodage souvent cassé)
-        elif from_ppt and self.has_broken_accents(file_path):
-            log.warning("******** Broken accents from PPT → OCR ********")
-            force_ocr = True
-
-        # Cas 3 : PDF natif avec accents cassés (OPTION CONSERVÉE)
-        # elif not from_ppt and self.has_broken_accents(file_path):
-        #     log.warning("******** Broken accents on native PDF → OCR ********")
-        #     force_ocr = True
-
-        # ============================================================
-        # OCR GLOBAL (PAGE PAR PAGE)
-        # ============================================================
         if force_ocr:
             log.info("******** OCR MODE ENABLED ********")
-
             ocr_pages = self.extract_text_tesseract(file_path)
-
             md_pages = []
-
             for page_idx, page_text in enumerate(ocr_pages):
                 cleaned = self.clean_ocr_text(page_text)
-
                 if not cleaned.strip():
                     continue
 
@@ -1047,28 +931,13 @@ class PDFProcessingPipeline:
             )
 
             batch_md = temp_batch_md.read_text(encoding="utf-8")
-
             batch_md = self.clean_docling_artifacts(batch_md)
             batch_md = self.normalize_titles(batch_md)
             batch_md = self.fix_misplaced_accents(batch_md)
             batch_md = self.fix_docling_latin_noise(batch_md)
 
-            # ========================================================
-            # DÉTECTION FINALE APRÈS 1er BATCH DOCLING (CLÉ)
-            # ========================================================
             if start == 1 and self.has_broken_accents(batch_md):
-                log.warning("******** Broken accents detected AFTER DOCLING → OCR FALLBACK ********")
-
-                temp_batch_md.unlink(missing_ok=True)
-
-                text = self.extract_text_tesseract(file_path)
-                cleaned_text = self.clean_ocr_text(text)
-                fr_text, ar_text = self.split_text_ar_fr(cleaned_text)
-                md = self.build_bilingual_markdown(fr_text, ar_text)
-
-                output_md.write_text(md, encoding="utf-8")
-                return output_md
-
+                log.warning("******** Broken accents detected AFTER DOCLING → IGNORING (OCR DISABLED) ********")
             md_parts.append(batch_md)
             temp_batch_md.unlink(missing_ok=True)
 
@@ -1079,7 +948,6 @@ class PDFProcessingPipeline:
         md_parts = self.deduplicate_md_batches(md_parts)
         full_md = "\n\n".join(md_parts)
 
-        #full_md = "\n\n".join(md_parts)
         #SUPPRESSION des placeholders Docling (images picture désactivées) dans le cas ou le document dépasse la taille autorisée
         full_md = re.sub(
             r"<!--.*?generate_picture_images=True.*?-->",
@@ -1100,7 +968,6 @@ class PDFProcessingPipeline:
         # ============================================================
 
         self.enrich_markdown(temp_md, output_md)
-
         temp_md.unlink(missing_ok=True)
 
         # ============================================================
@@ -1123,14 +990,6 @@ class PDFProcessingPipeline:
 # path_file=r"C:\Users\Ines_Ben_Amor\PycharmProjects\Pdf_Converter\8.2.7.4_NC29_Prov.pdf"
 # output=r"C:\Users\Ines_Ben_Amor\PycharmProjects\Pdf_Converter\test6.md"
 # instance=PDFProcessingPipeline()
-# start=time.time()
 # test = instance.run(path_file, output)
-# end=time.time()
-# duree=end-start
-# print(duree)
-#
-#
-#
-#
-#
+
 
