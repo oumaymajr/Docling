@@ -2,7 +2,7 @@
 FROM continuumio/miniconda3:latest
 
 # Set working directory
-WORKDIR /app
+WORKDIR /data/maghrebia/Git/
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -14,10 +14,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Create conda environment
-RUN conda create -n docling_env python=3.11 -y
+RUN conda create -n doc_venv python=3.11 -y
 
 # Make RUN commands use the conda environment
-SHELL ["conda", "run", "-n", "docling_env", "/bin/bash", "-c"]
+SHELL ["conda", "run", "-n", "doc_venv", "/bin/bash", "-c"]
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -32,6 +32,7 @@ RUN mkdir -p image_cache detected_images/useful detected_images/not_useful
 EXPOSE 8001
 
 # Set conda environment activation and run uvicorn
-CMD ["conda", "run", "--no-capture-output", "-n", "docling_env", \
+CMD ["conda", "run", "--no-capture-output", "-n", "doc_venv", \
      "uvicorn", "docling_apis:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+
 

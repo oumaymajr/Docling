@@ -10,22 +10,22 @@ services:
       - "8001:8001"
     volumes:
       # Mount code for hot reload
-      - .:/app
+      - .:/data/maghrebia/Git
       # Mount .env file
-      - ./.env:/app/.env
+      - ./.env:/data/maghrebia/Git/.env
       # Persist cache directories
-      - ./image_cache:/app/image_cache
-      - ./detected_images:/app/detected_images
+      - ./image_cache:/data/maghrebia/Git/image_cache
+      - ./detected_images:/data/maghrebia/Git/detected_images
     environment:
       - PYTHONUNBUFFERED=1
     # Uncomment if you need GPU support
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+       resources:
+         reservations:
+           devices:
+             - driver: nvidia
+               count: all
+               capabilities: [gpu]
     restart: unless-stopped
     networks:
       - maghrebia-net
