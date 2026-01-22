@@ -1,5 +1,4 @@
 version: '3.8'
-
 services:
   docling-api:
     build:
@@ -9,28 +8,25 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      # Mount code for hot reload
-      - .:/data/maghrebia/Git
-      # Mount .env file
-      - ./.env:/data/maghrebia/Git/.env
-      # Persist cache directories
-      - ./image_cache:/data/maghrebia/Git/image_cache
-      - ./detected_images:/data/maghrebia/Git/detected_images
+      - .:/data/maghrebia/Git/Docling
+      - ./.env:/data/maghrebia/Git/Docling/.env
+      - ./image_cache:/data/maghrebia/Git/Docling/image_cache
+      - ./detected_images:/data/maghrebia/Git/Docling/detected_images
     environment:
       - PYTHONUNBUFFERED=1
-    # Uncomment if you need GPU support
+      - HOST=0.0.0.0
+      - PORT=8001
     deploy:
-       resources:
-         reservations:
-           devices:
-             - driver: nvidia
-               count: all
-               capabilities: [gpu]
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
     networks:
       - maghrebia-net
 
 networks:
   maghrebia-net:
-    driver: bridge
-
+    external: true
